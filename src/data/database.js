@@ -1,0 +1,190 @@
+import * as duckdb from "@duckdb/duckdb-wasm";
+import { state } from "../state.js";
+import { rowsOf } from "../lib/sql.js";
+import { datasetFile, localUrl, pruneDatasetCache, usesLocalData } from "./source.js";
+
+// Every quality issue that describes a row, whatever record it was raised on: the
+// source row, its station, sample, analysis, result or, where the release has them,
+// the location as the source reported it. Issues closed as RESOLVED or REJECTED no
+// longer describe the record; OPEN and ACCEPTED ones do. Issues raised on a whole
+// campaign or dataset are left to its guide, since they would mark every row of it.
+const ISSUE_TARGETS = [
+  ["source_record", "sr.source_record_id"],
+  ["station", "st.station_id"],
+  ["sample", "s.sample_id"],
+  ["analysis", "a.analysis_id"],
+  ["result", "r.result_id"],
+];
+const LOCATED_ISSUE_TARGETS = [...ISSUE_TARGETS, ["location_observation", "lo.location_observation_id"]];
+
+function issueJoins(targets) {
+  return targets.map(([entity, key], index) => `
+  LEFT JOIN (
+    SELECT entity_id, string_agg(DISTINCT rule_code, ',') AS rules
+    FROM read_parquet('quality_issues.parquet')
+    WHERE entity_type = '${entity}' AND review_status NOT IN ('RESOLVED', 'REJECTED') GROUP BY entity_id
+  ) q${index} ON q${index}.entity_id = ${key}`).join("");
+}
+
+// One rule is listed once even when it was raised on several records of the row.
+function issueRules(targets) {
+  const rules = targets.map((_, index) => `q${index}.rules`).join(", ");
+  return `nullif(array_to_string(list_sort(list_distinct(string_split(concat_ws(',', ${rules}), ','))), ','), '') AS quality_rules`;
+}
+
+// One row per analytical result, joined with its sample, event, station, campaign,
+// source row and quality issues. zone is
+// the watercourse or site written on the field sheet, without accents or the detail
+// after a comma, dash or "aguas arriba/abajo", so "Río Salado – Afluentes" and
+// "Rio Salado" group together.
+const SEDIMENT_OBSERVATIONS = `
+  CREATE OR REPLACE TEMP TABLE observations AS
+  SELECT r.result_id, r.analysis_id, s.sample_id, sr.source_record_id,
+         coalesce(st.canonical_code, s.reported_code, st.station_id) AS station_code,
+         st.station_id, st.easting_m, st.northing_m, st.epsg, st.coordinate_status,
+         e.sampling_date, e.campaign_id, cp.campaign_name,
+         r.parameter_code, p.parameter_name, r.reported_value, r.numeric_value,
+         r.qualifier, r.reported_limit, coalesce(r.reported_unit, r.canonical_unit) AS reported_unit,
+         r.quality_status, sf.source_name, sf.relative_path, sf.sheet_name, sr.source_row_number,
+         r.canonical_unit, r.reported_unit IS NULL AND r.canonical_unit IS NOT NULL AS unit_is_inferred,
+         s.data_role, s.sample_type, a.analysis_type, e.date_precision, e.date_is_estimated,
+         e.zone_description,
+         nullif(trim(regexp_replace(regexp_replace(strip_accents(lower(e.zone_description)), '\\s*[,;(\\x{2013}-].*$', ''),
+           '\\s+(en el|en la|aguas arriba|aguas abajo|a la altura|junto a|cerca de)\\s.*$', '')), '') AS zone,
+         ${issueRules(ISSUE_TARGETS)}
+  FROM read_parquet('results.parquet') r
+  JOIN read_parquet('parameters.parquet') p USING (parameter_code)
+  JOIN read_parquet('analyses.parquet') a USING (analysis_id)
+  JOIN read_parquet('samples.parquet') s USING (sample_id)
+  JOIN read_parquet('sampling_events.parquet') e USING (sampling_event_id)
+  JOIN read_parquet('campaigns.parquet') cp USING (campaign_id)
+  LEFT JOIN read_parquet('stations.parquet') st USING (station_id)
+  JOIN read_parquet('source_records.parquet') sr ON r.source_record_id = sr.source_record_id
+  JOIN read_parquet('source_files.parquet') sf ON sr.source_file_id = sf.source_file_id
+  ${issueJoins(ISSUE_TARGETS)}
+`;
+
+// Flora and soils keep the location each source reported in location_observations, one
+// per source row, and the worksheet and row of that source row in source_locator
+// ("Data!54:54"), so the worksheet is read from there.
+const SAMPLE_SOURCES = `
+  FROM read_parquet('results.parquet') r
+  JOIN read_parquet('parameters.parquet') p USING (parameter_code)
+  JOIN read_parquet('analyses.parquet') a USING (analysis_id)
+  JOIN read_parquet('samples.parquet') s USING (sample_id)
+  JOIN read_parquet('sampling_events.parquet') e USING (sampling_event_id)
+  JOIN read_parquet('campaigns.parquet') cp USING (campaign_id)
+  LEFT JOIN read_parquet('stations.parquet') st ON st.station_id = e.station_id
+  JOIN read_parquet('source_records.parquet') sr ON r.source_record_id = sr.source_record_id
+  JOIN read_parquet('source_files.parquet') sf ON sr.source_file_id = sf.source_file_id
+  LEFT JOIN read_parquet('location_observations.parquet') lo ON lo.source_record_id = sr.source_record_id
+  ${issueJoins(LOCATED_ISSUE_TARGETS)}
+`;
+const SAMPLE_SHEET = "coalesce(nullif(split_part(sr.source_locator, '!', 1), ''), sf.source_locator) AS sheet_name";
+
+// Flora shares the audit trail and analytical-result tables with sediments, but its
+// sample identity is biological. This view keeps the shared map/table contract while
+// exposing the raw taxon and plant fields for the record panel. It does not infer an
+// accepted taxon or a hydrological relationship.
+const FLORA_OBSERVATIONS = `
+  CREATE OR REPLACE TEMP TABLE observations AS
+  SELECT r.result_id, r.analysis_id, s.sample_id, sr.source_record_id,
+         coalesce(st.canonical_code, s.reported_code, st.station_id) AS station_code,
+         st.station_id, st.easting_m, st.northing_m, st.epsg, st.coordinate_status,
+         try_cast(e.sampling_date AS DATE) AS sampling_date, e.campaign_id, cp.campaign_name,
+         r.parameter_code, p.parameter_name, r.reported_value, r.numeric_value,
+         r.qualifier, r.reported_limit, coalesce(r.reported_unit, r.canonical_unit) AS reported_unit,
+         r.quality_status, sf.source_name, sf.relative_path, ${SAMPLE_SHEET}, sr.source_row_number,
+         r.canonical_unit, r.reported_unit IS NULL AND r.canonical_unit IS NOT NULL AS unit_is_inferred,
+         s.data_role, s.matrix_code AS sample_type, a.analysis_group AS analysis_type,
+         e.date_precision, e.date_is_estimated, e.zone_description,
+         CAST(NULL AS VARCHAR) AS zone,
+         s.reported_species, s.plant_part, s.matrix_code, s.treatment, s.reported_treatment,
+         s.material_description, a.laboratory, a.analytical_method, a.result_basis, a.washing_status,
+         ${issueRules(LOCATED_ISSUE_TARGETS)}
+  ${SAMPLE_SOURCES}
+`;
+
+// Soils share the audit trail with the other datasets, but a station can hold a pit
+// with several horizons and a sample can carry several analyses (metals, mercury,
+// characterization). The view exposes depth, horizon, sampling design and the limit
+// evidence of each result. It does not infer background, units or a limit type.
+const SOIL_OBSERVATIONS = `
+  CREATE OR REPLACE TEMP TABLE observations AS
+  SELECT r.result_id, r.analysis_id, s.sample_id, sr.source_record_id,
+         coalesce(s.reported_code, st.canonical_code, st.station_id) AS station_code,
+         st.station_id, st.easting_m, st.northing_m, st.epsg, st.coordinate_status,
+         e.sampling_date, e.campaign_id, cp.campaign_name,
+         r.parameter_code, p.parameter_name, r.reported_value, r.numeric_value,
+         r.qualifier, r.reported_limit, coalesce(r.reported_unit, r.canonical_unit) AS reported_unit,
+         r.quality_status, sf.source_name, sf.relative_path, ${SAMPLE_SHEET}, sr.source_row_number,
+         r.canonical_unit, r.reported_unit IS NULL AND r.canonical_unit IS NOT NULL AS unit_is_inferred,
+         s.data_role, s.matrix_code AS sample_type, a.analysis_group AS analysis_type,
+         e.date_precision, e.date_is_estimated, e.zone_description,
+         CAST(NULL AS VARCHAR) AS zone,
+         s.matrix_code, s.sampling_method, s.sample_role, s.horizon, s.depth_from_m, s.depth_to_m,
+         s.reported_depth, s.sample_category, s.material_description,
+         cp.entity_label, cp.study_design,
+         a.laboratory, a.analytical_method, a.digestion_type, a.result_basis,
+         r.text_value, r.limit_type, r.detection_limit, r.quantification_limit, r.uncertainty,
+         ${issueRules(LOCATED_ISSUE_TARGETS)}
+  ${SAMPLE_SOURCES}
+`;
+
+const OBSERVATIONS = { flora: FLORA_OBSERVATIONS, soils: SOIL_OBSERVATIONS };
+
+// Each dataset keeps its own DuckDB once opened, so switching back to it is instant.
+const opened = new Map();
+
+export async function openDatabase(onStep) {
+  const kept = opened.get(state.dataset.id);
+  if (kept) {
+    Object.assign(state.dataset, { available: kept.available, parameters: kept.parameters });
+    state.db = kept.connection;
+    return;
+  }
+  const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
+  const workerUrl = URL.createObjectURL(new Blob([`importScripts("${bundle.mainWorker}");`], { type: "text/javascript" }));
+  const db = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), new Worker(workerUrl));
+  await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+  URL.revokeObjectURL(workerUrl);
+
+  onStep("Loading data");
+  const local = await usesLocalData();
+  const register = async (name) => {
+    const path = `data/${name}.parquet`;
+    if (local) await db.registerFileURL(`${name}.parquet`, localUrl(path), duckdb.DuckDBDataProtocol.HTTP, false);
+    else await db.registerFileBuffer(`${name}.parquet`, await datasetFile(path, "buffer"));
+  };
+  await Promise.all(state.dataset.tables.map(register));
+  // Tables added by later releases are read when the pinned release has them, so the
+  // explorer keeps working on an older one; state.dataset.available lists what was found.
+  const optional = await Promise.all((state.dataset.optionalTables || []).map(async (name) => {
+    if (local && !(await fetch(localUrl(`data/${name}.parquet`), { method: "HEAD", cache: "no-store" }).then((response) => response.ok, () => false))) return null;
+    try {
+      await register(name);
+      return name;
+    } catch {
+      return null;
+    }
+  }));
+  state.dataset.available = [...state.dataset.tables, ...optional.filter(Boolean)];
+  pruneDatasetCache().catch((error) => console.warn("Dataset cache cleanup failed:", error));
+
+  onStep("Building tables");
+  state.db = await db.connect();
+  await state.db.query(OBSERVATIONS[state.dataset.profile] || SEDIMENT_OBSERVATIONS);
+  // Every parameter of the release is a valid code for the assistant; labels written in
+  // the config win over the names in parameters.parquet.
+  const names = rowsOf(await state.db.query("SELECT parameter_code, parameter_name FROM read_parquet('parameters.parquet')"));
+  state.dataset.parameters = { ...Object.fromEntries(names.map((row) => [row.parameter_code, row.parameter_name])), ...state.dataset.parameters };
+  opened.set(state.dataset.id, { connection: state.db, available: state.dataset.available, parameters: state.dataset.parameters });
+}
+
+export async function query(sql, options) {
+  return rowsOf(await state.db.query(sql), options);
+}
+
+export function queryTable(sql) {
+  return state.db.query(sql);
+}
