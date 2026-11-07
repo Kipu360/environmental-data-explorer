@@ -1,0 +1,7 @@
+{
+  "server_name": "kipu-tools",
+  "version": "0.1.0",
+  "data_root": "./data",
+  "max_rows": 25,
+  "timeout_seconds": 5
+}
