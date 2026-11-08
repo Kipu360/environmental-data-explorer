@@ -11,5 +11,8 @@
     "cacheWrite": 6.25,
     "cacheRead": 0.5,
     "output": 25
-  }
+  },
+  "dataMode": "local",
+  "mcpUrl": "https://deep-uv.tailb4981e.ts.net:8443/mcp",
+  "mcpToken": "kipu-mcp-demo"
 }

@@ -181,7 +181,39 @@ export async function openDatabase(onStep) {
   opened.set(state.dataset.id, { connection: state.db, available: state.dataset.available, parameters: state.dataset.parameters });
 }
 
+// Modo MCP: la consulta la corre el servidor y vuelven las filas ya armadas.
+async function mcpQuery(sql) {
+  const config = state.assistant;
+  const response = await fetch(config.mcpUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${config.mcpToken || ""}` },
+    body: JSON.stringify({
+      jsonrpc: "2.0", id: 1, method: "tools/call",
+      params: { name: "run_sql", arguments: { sql } },
+    }),
+  });
+  if (!response.ok) throw new Error(`MCP respondió ${response.status}`);
+  const data = await response.json();
+  const text = data?.result?.content?.[0]?.text || "";
+  if (data?.result?.isError) throw new Error(text);
+  const payload = JSON.parse(text);
+  return payload.rows.map((row) =>
+    Object.fromEntries(payload.columns.map((column, index) => {
+      const value = row[index];
+      return [column, typeof value === "string" && /^-?\d+(\.\d+)?$/.test(value) ? Number(value) : value];
+    })));
+}
+
 export async function query(sql, options) {
+  const mcp = state.assistant?.dataMode === "mcp" && state.assistant?.mcpUrl;
+  // Las consultas de arranque leen archivos locales; esas siguen en la pestaña.
+  if (mcp && !/read_parquet|parameters\.parquet/i.test(sql)) {
+    try {
+      return await mcpQuery(sql);
+    } catch (error) {
+      console.warn("MCP falló, se usa la copia local:", error.message);
+    }
+  }
   return rowsOf(await state.db.query(sql), options);
 }
 
