@@ -277,7 +277,7 @@
 
           <div class="data-table-wrap">
             <div class="data-table" role="table" aria-label="Analytical results">
-              <div class="data-row head" role="row"><span id="dataStationHeading">Station</span><span>Date</span><span>Parameter</span><span>Value</span><span>Quality</span></div>
+              <div class="data-row head" role="row"><span id="dataStationHeading">Station</span><span>Date</span><span>Element</span><span id="dataValueHeading" title="Value in the reported unit">Value</span><span>Status</span></div>
               <div id="dataRows" class="data-rows"><div class="data-loading">Loading results…</div></div>
             </div>
           </div>
@@ -304,6 +304,7 @@
               <button id="keyClear" type="button">Use demo key</button>
             </div>
             <div class="composer-footer">
+              <select id="modelSelect" class="model-select" aria-label="Model" hidden></select>
               <button id="keyToggle" class="key-toggle" type="button" title="Use your own API key"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="m11 12 8-8M16 7l2 2M14 9l2 2"/></svg><span id="keyStatus">No key</span></button>
               <button id="newChat" class="new-chat" type="button" hidden>New chat</button>
               <button id="exportChat" class="export-chat" type="button" title="Download the whole conversation as a PDF" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14"/></svg><b>PDF</b></button>

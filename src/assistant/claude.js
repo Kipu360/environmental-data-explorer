@@ -7,18 +7,22 @@ let client = null;
 let clientKey = null;
 
 function clientFor(apiKey) {
-  if (!client || clientKey !== apiKey) {
-    // The key is either the demo key decrypted after sign-in or one the user pasted.
-    client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
-    clientKey = apiKey;
+  const proxyUrl = state.assistant?.proxyUrl;
+  const key = proxyUrl ? state.assistant.proxyToken || "demo" : apiKey;
+  const cacheKey = `${proxyUrl || ""}|${key}`;
+  if (!client || clientKey !== cacheKey) {
+    client = new Anthropic({ apiKey: key, ...(proxyUrl ? { baseURL: proxyUrl } : {}), dangerouslyAllowBrowser: true });
+    clientKey = cacheKey;
   }
   return client;
 }
 
 export function modelLabel() {
+  const model = state.assistant.model || "";
+  const name = model.includes("/") ? model.split("/").slice(1).join("/") : model;
   const words = [];
   const numbers = [];
-  for (const part of state.assistant.model.split("-")) (/^\d+$/.test(part) ? numbers : words).push(part);
+  for (const part of name.split("-")) (/^\d+$/.test(part) ? numbers : words).push(part);
   return [...words.map((word) => word[0].toUpperCase() + word.slice(1)), numbers.join(".")].filter(Boolean).join(" ");
 }
 

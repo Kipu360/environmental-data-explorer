@@ -8,6 +8,7 @@ import { renderChart } from "./charts.js";
 import { downloadConversation, downloadTurn, keepTurnMap } from "./report.js";
 import { selectionNote, systemPrompt } from "./prompt.js";
 import { runTool, tools } from "./tools.js";
+import { pickProvider, providerOptions } from "./providers.js";
 
 const $ = (id) => document.getElementById(id);
 const EMPTY_CHAT = '<p class="chat-empty">Ask anything about the data: a summary, the highest values, a trend over time or a comparison between campaigns. Answers follow the current selection in Data explorer.</p>';
@@ -52,7 +53,12 @@ let busy = false;
 // How many drawings the map had when the current question was asked.
 let drawingsBefore = 0;
 
+function proxyReady() {
+  return Boolean(state.assistant?.proxyUrl);
+}
+
 function apiKey() {
+  if (proxyReady()) return state.assistant.proxyToken || "demo";
   return ownApiKey() || state.session?.anthropicApiKey || "";
 }
 
@@ -83,7 +89,7 @@ function closeTurn() {
 }
 
 function describeError(error) {
-  if (error instanceof Anthropic.AuthenticationError) return "The API key was rejected. Add a valid key with the key button below.";
+  if (error instanceof Anthropic.AuthenticationError) return proxyReady() ? "The proxy rejected the token. Check proxyToken in config/assistant.json." : "The API key was rejected. Add a valid key with the key button below.";
   if (error instanceof Anthropic.RateLimitError) return "The assistant is busy (rate limit). Wait a moment and try again.";
   if (error instanceof Anthropic.BadRequestError && /not scoped to a workspace/i.test(error.message)) {
     return "This key works across several workspaces. In the Claude Console, create a key inside one workspace (Settings > API keys) and add that one.";
@@ -227,11 +233,13 @@ function updateComposer() {
 }
 
 function renderKeyStatus() {
+  const proxy = proxyReady();
   const own = Boolean(ownApiKey());
   const demo = Boolean(state.session?.anthropicApiKey);
-  $("keyStatus").textContent = `${own ? "Your key" : demo ? "Demo key" : "No key · add yours"} · ${modelLabel()}`;
-  $("keyToggle").classList.toggle("missing", !own && !demo);
-  $("keyClear").hidden = !own;
+  $("keyStatus").textContent = proxy ? `Proxy · ${modelLabel()}` : `${own ? "Your key" : demo ? "Demo key" : "No key · add yours"} · ${modelLabel()}`;
+  $("keyToggle").classList.toggle("missing", !proxy && !own && !demo);
+  $("keyToggle").hidden = proxy;
+  $("keyClear").hidden = proxy || !own;
   $("keyClear").textContent = demo ? "Use demo key" : "Remove key";
   updateComposer();
 }
@@ -268,8 +276,30 @@ export function resetChat() {
   updateComposer();
 }
 
+// Un desplegable con los proveedores que el proxy tiene con key. Sin proxy no aparece.
+async function renderModels() {
+  const select = $("modelSelect");
+  if (!select || !proxyReady()) return;
+  const options = await providerOptions();
+  if (!options.length) {
+    select.hidden = true;
+    return;
+  }
+  pickProvider(options);
+  select.innerHTML = options
+    .map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`)
+    .join("");
+  select.value = state.assistant.model;
+  select.hidden = options.length < 2;
+  select.addEventListener("change", () => {
+    state.assistant.model = select.value;
+    renderKeyStatus();
+  });
+}
+
 export function bindChat() {
   const form = document.querySelector(".composer");
+  renderModels();
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const text = $("question").value.trim();
