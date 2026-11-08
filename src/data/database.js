@@ -189,7 +189,7 @@ async function mcpQuery(sql) {
     headers: { "content-type": "application/json", authorization: `Bearer ${config.mcpToken || ""}` },
     body: JSON.stringify({
       jsonrpc: "2.0", id: 1, method: "tools/call",
-      params: { name: "run_sql", arguments: { sql } },
+      params: { name: "run_sql", arguments: { sql, dataset: state.dataset?.id || "sediments" } },
     }),
   });
   if (!response.ok) throw new Error(`MCP respondió ${response.status}`);
