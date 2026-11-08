@@ -4,5 +4,12 @@
   "maxTokens": 16000,
   "maxSteps": 12,
   "fallbacks": "default",
-  "pricePerMTok": { "input": 5, "cacheWrite": 6.25, "cacheRead": 0.5, "output": 25 }
+  "proxyUrl": "https://deep-uv.tailb4981e.ts.net:8443",
+  "proxyToken": "demo",
+  "pricePerMTok": {
+    "input": 5,
+    "cacheWrite": 6.25,
+    "cacheRead": 0.5,
+    "output": 25
+  }
 }

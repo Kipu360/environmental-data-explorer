@@ -290,7 +290,7 @@ async function renderModels() {
     .map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`)
     .join("");
   select.value = state.assistant.model;
-  select.hidden = options.length < 2;
+  select.hidden = false;
   select.addEventListener("change", () => {
     state.assistant.model = select.value;
     renderKeyStatus();
