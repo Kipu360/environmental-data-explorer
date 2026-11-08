@@ -137,6 +137,40 @@ function logCost(total) {
   console.info(`Question used ${input.toLocaleString()} input tokens (${total.cacheRead.toLocaleString()} from cache) and ${total.output.toLocaleString()} output tokens${cost == null ? "" : `, about $${cost.toFixed(3)}`}`);
 }
 
+// "What can you do" is answered here, not by the model: a tool list in the prompt makes
+// the model name its own functions, which reads like code to the people using the map.
+const CAPABILITIES = /^(que puedes hacer|qué puedes hacer|que sabes hacer|qué sabes hacer|para que sirves|para qué sirves|what can you do|what do you do)\??$/i;
+
+function capabilities(question) {
+  const spanish = !/\bwhat\b/i.test(question);
+  const text = spanish
+    ? [
+        "Puedo leer los datos de este mapa y responderte con números, tablas, gráficos y el mapa.",
+        "",
+        "- Cuántas muestras hay, de qué años y qué tan confiables son.",
+        "- Cómo se distribuye un elemento y qué parte quedó bajo el límite de detección.",
+        "- Dónde están los valores más altos y qué estaciones se parecen.",
+        "- Comparar zonas, ríos, fuentes y años.",
+        "- Marcar en el mapa el área que concentra los valores altos.",
+        "",
+        "Decime el elemento y el período, y lo calculo.",
+      ].join("\n")
+    : [
+        "I can read this map's data and answer with numbers, tables, charts and the map.",
+        "",
+        "- How many samples there are, from which years, and how reliable they are.",
+        "- How an element is distributed and how much fell below the detection limit.",
+        "- Where the highest values are and which stations look alike.",
+        "- Compare zones, rivers, sources and years.",
+        "- Outline on the map the area that concentrates the high values.",
+        "",
+        "Tell me the element and the period, and I will compute it.",
+      ].join("\n");
+  message("user", "¿Qué puedes hacer?");
+  message("assistant", text);
+  return true;
+}
+
 async function ask(question) {
   busy = true;
   updateComposer();
@@ -305,6 +339,7 @@ export function bindChat() {
     const text = $("question").value.trim();
     if (!text || busy || !apiKey()) return;
     $("question").value = "";
+    if (CAPABILITIES.test(text.trim())) { capabilities(text); updateComposer(); return; }
     ask(text);
   });
   $("question").addEventListener("input", updateComposer);
